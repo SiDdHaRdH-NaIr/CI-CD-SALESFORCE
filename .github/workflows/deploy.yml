@@ -25,6 +25,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ✅ NEW: Read Apex Tests from PR Description
+      - name: Read Apex Tests From PR Description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          echo "$PR_BODY" > pr_body.txt
+
+          TESTS=$(sed -n 's/.*Apex::\[\(.*\)\]::Apex.*/\1/p' pr_body.txt)
+
+          if [ -z "$TESTS" ]; then
+            echo "No explicit tests found in PR."
+            echo "APEX_TESTS=auto" >> $GITHUB_ENV
+          else
+            echo "Tests Found: $TESTS"
+            echo "APEX_TESTS=$TESTS" >> $GITHUB_ENV
+            echo "APEX_TEST_LEVEL=RunSpecifiedTests" >> $GITHUB_ENV
+          fi
+
       # Install Salesforce CLI (sf)
       - name: Install Salesforce CLI
         run: |
@@ -37,7 +55,6 @@ jobs:
           echo y | sf plugins install sfdx-git-delta
           sf plugins
 
-      
       - name: Select Validation Target
         id: target
         run: |
@@ -69,7 +86,27 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
           sf sgd:source:delta --to "$HEAD" --from "$BASE" --output changed-sources/ --generate-delta --source force-app/
 
-      # Validate deployment (no manifest used)
+      # ✅ NEW: Auto-detect Tests If Not Provided
+      - name: Auto Detect Related Tests (If Not Provided)
+        if: env.APEX_TESTS == 'auto'
+        run: |
+          echo "Auto-detecting test classes..."
+
+          TEST_CLASSES=$(find changed-sources -name "*Test.cls" \
+            | sed 's#.*/##' \
+            | sed 's/\.cls//g' \
+            | tr '\n' ',' | sed 's/,$//')
+
+          if [ -z "$TEST_CLASSES" ]; then
+            echo "No test classes detected in delta. Using RunLocalTests."
+            echo "APEX_TEST_LEVEL=RunLocalTests" >> $GITHUB_ENV
+          else
+            echo "Detected Tests: $TEST_CLASSES"
+            echo "APEX_TEST_LEVEL=RunSpecifiedTests" >> $GITHUB_ENV
+            echo "APEX_TESTS=$TEST_CLASSES" >> $GITHUB_ENV
+          fi
+
+      # ✅ UPDATED: Validate with Dynamic Test Selection
       - name: Validate Delta Deployment (Check-only)
         run: |
           if [ -d "changed-sources/force-app" ]; then
@@ -77,7 +114,8 @@ jobs:
               --source-dir changed-sources/force-app \
               --dry-run \
               --ignore-conflicts \
-              --test-level RunLocalTests \
+              --test-level ${{ env.APEX_TEST_LEVEL || 'RunSpecifiedTests' }} \
+              --tests "${{ env.APEX_TESTS }}" \
               --wait 30 \
               -o ${{ steps.target.outputs.ORG }}
           else
