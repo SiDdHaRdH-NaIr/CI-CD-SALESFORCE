@@ -25,13 +25,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ✅ NEW: Read Apex Tests from PR Description
+      # ✅ Read Apex Tests from PR Description
       - name: Read Apex Tests From PR Description
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           echo "$PR_BODY" > pr_body.txt
-
           TESTS=$(sed -n 's/.*Apex::\[\(.*\)\]::Apex.*/\1/p' pr_body.txt)
 
           if [ -z "$TESTS" ]; then
@@ -86,7 +85,7 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
           sf sgd:source:delta --to "$HEAD" --from "$BASE" --output changed-sources/ --generate-delta --source force-app/
 
-      # ✅ NEW: Auto-detect Tests If Not Provided
+      # ✅ Auto-detect Tests If Not Provided
       - name: Auto Detect Related Tests (If Not Provided)
         if: env.APEX_TESTS == 'auto'
         run: |
@@ -106,7 +105,31 @@ jobs:
             echo "APEX_TESTS=$TEST_CLASSES" >> $GITHUB_ENV
           fi
 
-      # ✅ UPDATED: Validate with Dynamic Test Selection
+      # ✅ ✅ ✅ SCANNER JOB ADDED HERE
+      - name: Install Java (For Scanner)
+        run: |
+          sudo apt-get update
+          sudo apt install default-jdk -y
+
+      - name: Install SFDX Scanner Plugin
+        run: |
+          sf plugins install @salesforce/sfdx-scanner
+
+      - name: Scan Apex Code (Delta Only)
+        run: |
+          cd changed-sources
+          sf scanner run --format sarif \
+            --target "./**/*.cls" \
+            --category "Security,Design,BestPractices,Performance" \
+            --outfile "apexScanResults.sarif"
+          cd ..
+
+      - name: Upload Scanner Results to GitHub
+        uses: github/codeql-action/upload-sarif@v1
+        with:
+          sarif_file: changed-sources/apexScanResults.sarif
+
+      # ✅ Validate with Dynamic Test Selection
       - name: Validate Delta Deployment (Check-only)
         run: |
           if [ -d "changed-sources/force-app" ]; then
@@ -121,6 +144,7 @@ jobs:
           else
             echo "No delta detected → skipping validation."
           fi
+
 
   deploy_qa:
     runs-on: ubuntu-latest
@@ -165,6 +189,7 @@ jobs:
           else
             echo "No delta for QA deployment."
           fi
+
 
   deploy_uat:
     runs-on: ubuntu-latest
