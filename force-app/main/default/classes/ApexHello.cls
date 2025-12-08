@@ -9,7 +9,9 @@ public class ApexHello {
     }
     public static String hello(String x, String y){
         String v = x+y;
+        System.debug('HELLO WORLD');
+
         return v;
     }
-    //Comment new added
+    
 }
