@@ -12,4 +12,9 @@ public class ApexHello_Test {
         Integer result = ApexHello.addNum(5, 7);
         System.assertEquals(12, result);
     }
+    @IsTest
+    static void testhello() {
+        String result = ApexHello.hello('Hello', 'Salesforce');
+        System.assertEquals('HelloSalesforce', result);
+    }
 }
