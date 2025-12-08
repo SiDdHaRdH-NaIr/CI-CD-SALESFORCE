@@ -63,11 +63,16 @@ jobs:
       - name: Select Validation Target
         id: target
         run: |
-          if [[ "${{ github.base_ref }}" == "master" ]]; then
-            echo "ORG=UAT" >> $GITHUB_OUTPUT
-          else
-            echo "ORG=QA" >> $GITHUB_OUTPUT
-          fi
+            if [[ "${{ github.base_ref }}" == "dev" ]]; then
+                echo "ORG=QA" >> $GITHUB_OUTPUT
+            elif [[ "${{ github.base_ref }}" == "uat" ]]; then
+                echo "ORG=UAT" >> $GITHUB_OUTPUT
+            elif [[ "${{ github.base_ref }}" == "master" ]]; then
+                echo "ORG=PROD" >> $GITHUB_OUTPUT
+            else
+                echo "ORG=QA" >> $GITHUB_OUTPUT
+                fi
+
 
       - name: Authenticate to Target Org
         env:
