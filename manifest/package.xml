@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
+
+    <!-- Apex -->
     <types>
         <members>*</members>
         <name>ApexClass</name>
@@ -20,6 +22,8 @@
         <members>*</members>
         <name>ApexTrigger</name>
     </types>
+
+    <!-- LWC & Aura -->
     <types>
         <members>*</members>
         <name>AuraDefinitionBundle</name>
@@ -28,9 +32,24 @@
         <members>*</members>
         <name>LightningComponentBundle</name>
     </types>
+
+    <!-- Static Resources -->
     <types>
         <members>*</members>
         <name>StaticResource</name>
     </types>
+
+    <!-- ✅ Custom Objects -->
+    <types>
+        <members>*</members>
+        <name>CustomObject</name>
+    </types>
+
+    <!-- ✅ Custom Fields -->
+    <types>
+        <members>*</members>
+        <name>CustomField</name>
+    </types>
+
     <version>65.0</version>
 </Package>
