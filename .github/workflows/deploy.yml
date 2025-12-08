@@ -20,7 +20,7 @@ permissions:
 jobs:
 
   #############################################
-  # ✅ PR VALIDATION JOB (HYBRID TEST STRATEGY)
+  # ✅ PR VALIDATION JOB
   #############################################
   validate:
     runs-on: ubuntu-latest
@@ -33,7 +33,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ✅ FINAL: PR → RunSpecifiedTests | NO PR → RunLocalTests
+      #####################################
+      # ✅ TEST SELECTION FROM PR
+      #####################################
       - name: Read Apex Tests From PR Description
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -52,6 +54,9 @@ jobs:
             echo "APEX_TESTS=$CLEAN_TESTS" >> $GITHUB_ENV
           fi
 
+      #####################################
+      # ✅ INSTALL CLI + DELTA
+      #####################################
       - name: Install Salesforce CLI
         run: |
           npm install --global @salesforce/cli
@@ -60,33 +65,52 @@ jobs:
       - name: Install sfdx-git-delta
         run: echo y | sf plugins install sfdx-git-delta
 
+      #####################################
+      # ✅ TARGET SELECTION (FINAL FIX)
+      #####################################
       - name: Select Validation Target
         id: target
         run: |
-            if [[ "${{ github.base_ref }}" == "dev" ]]; then
-                echo "ORG=QA" >> $GITHUB_OUTPUT
-            elif [[ "${{ github.base_ref }}" == "uat" ]]; then
-                echo "ORG=UAT" >> $GITHUB_OUTPUT
-            elif [[ "${{ github.base_ref }}" == "master" ]]; then
-                echo "ORG=PROD" >> $GITHUB_OUTPUT
-            else
-                echo "ORG=QA" >> $GITHUB_OUTPUT
-                fi
+          echo "PR Base Branch = ${{ github.base_ref }}"
 
+          if [[ "${{ github.base_ref }}" == "dev" ]]; then
+            echo "ORG=QA" >> $GITHUB_OUTPUT
 
+          elif [[ "${{ github.base_ref }}" == "uat" ]]; then
+            echo "ORG=UAT" >> $GITHUB_OUTPUT
+
+          elif [[ "${{ github.base_ref }}" == "master" ]]; then
+            echo "ORG=PROD" >> $GITHUB_OUTPUT
+
+          else
+            echo "ORG=QA" >> $GITHUB_OUTPUT
+          fi
+
+      #####################################
+      # ✅ AUTHENTICATE
+      #####################################
       - name: Authenticate to Target Org
         env:
           QA_URL: ${{ secrets.SFDX_AUTH_URL_QA }}
           UAT_URL: ${{ secrets.SFDX_AUTH_URL_UAT }}
+          PROD_URL: ${{ secrets.SFDX_AUTH_URL_PROD }}
         run: |
           if [[ "${{ steps.target.outputs.ORG }}" == "QA" ]]; then
             echo "$QA_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a QA
-          else
+
+          elif [[ "${{ steps.target.outputs.ORG }}" == "UAT" ]]; then
             echo "$UAT_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a UAT
+
+          elif [[ "${{ steps.target.outputs.ORG }}" == "PROD" ]]; then
+            echo "$PROD_URL" > auth.txt
+            sf org login sfdx-url -f auth.txt -a PROD
           fi
 
+      #####################################
+      # ✅ GENERATE DELTA
+      #####################################
       - name: Generate Delta (PR Validation)
         run: |
           mkdir changed-sources
@@ -99,6 +123,9 @@ jobs:
             --generate-delta \
             --source force-app/
 
+      #####################################
+      # ✅ SCANNER
+      #####################################
       - name: Install Java
         run: |
           sudo apt-get update
@@ -117,18 +144,19 @@ jobs:
           cd ..
 
       - name: Upload Scanner Results to GitHub
-        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: changed-sources/apexScanResults.sarif
-          wait-for-processing: true
 
+      #####################################
+      # ✅ VALIDATE DEPLOYMENT
+      #####################################
       - name: Validate Delta Deployment (Check-only)
         run: |
           if [ -d "changed-sources/force-app" ]; then
 
             if [ "${{ env.APEX_TEST_LEVEL }}" == "RunSpecifiedTests" ]; then
-              echo "✅ Running ONLY specified tests: ${{ env.APEX_TESTS }}"
+              echo "✅ Running ONLY specified tests"
 
               sf project deploy start \
                 --source-dir changed-sources/force-app \
@@ -157,7 +185,7 @@ jobs:
 
 
   #############################################
-  # ✅ QA DEPLOY (on push to dev)
+  # ✅ DEPLOY TO QA (ON MERGE TO dev)
   #############################################
   deploy_qa:
     runs-on: ubuntu-latest
@@ -202,7 +230,7 @@ jobs:
 
 
   #############################################
-  # ✅ UAT DEPLOY (on push to uat)
+  # ✅ DEPLOY TO UAT (ON MERGE TO uat)
   #############################################
   deploy_uat:
     runs-on: ubuntu-latest
@@ -247,7 +275,7 @@ jobs:
 
 
   ####################################################
-  # 🚨 PRODUCTION DEPLOYMENT (INTENTIONALLY COMMENTED)
+  # 🚨 PRODUCTION DEPLOYMENT (SAFELY COMMENTED)
   ####################################################
   # deploy_prod:
   #   runs-on: ubuntu-latest
