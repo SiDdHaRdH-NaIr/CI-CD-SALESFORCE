@@ -1,5 +1,6 @@
 public class OpportunityFetchDetails {
 
+    //fetch opp details 
     public static List<Opportunity> oppFetch(){
         
         Date todayDate = Date.Today();
