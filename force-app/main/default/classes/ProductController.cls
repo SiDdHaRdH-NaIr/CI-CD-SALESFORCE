@@ -10,7 +10,7 @@ public with sharing class ProductController {
             LIMIT 500
         ];
     }
-
+    //@aure enables
     @AuraEnabled
     public static void saveOpportunityProducts(Id oppId, String productData) {
 
