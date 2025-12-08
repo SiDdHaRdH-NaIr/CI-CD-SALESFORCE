@@ -3,12 +3,10 @@ name: Salesforce Delta Deployment Pipeline
 on:
   pull_request:
     branches:
-      - master
       - dev
       - uat
   push:
     branches:
-      - master
       - dev
       - uat
 
@@ -17,11 +15,11 @@ permissions:
   security-events: write
   actions: read
 
+#############################################
+# ✅ PR VALIDATION JOB
+#############################################
 jobs:
 
-  #############################################
-  # ✅ PR VALIDATION JOB
-  #############################################
   validate:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
@@ -68,8 +66,6 @@ jobs:
       - name: Select Validation Target
         id: target
         run: |
-          echo "PR Base Branch = ${{ github.base_ref }}"
-
           if [[ "${{ github.base_ref }}" == "dev" ]]; then
             echo "ORG=QA" >> $GITHUB_OUTPUT
 
@@ -105,13 +101,14 @@ jobs:
           fi
 
       #####################################
-      # ✅ GENERATE DELTA
+      # ✅ GENERATE DELTA (PR)
       #####################################
       - name: Generate Delta (PR Validation)
         run: |
-          mkdir changed-sources
+          mkdir -p changed-sources
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
+
           sf sgd:source:delta \
             --to "$HEAD" \
             --from "$BASE" \
@@ -147,11 +144,9 @@ jobs:
                 --wait 30 \
                 -o ${{ steps.target.outputs.ORG }}
             fi
-
           else
             echo "No delta detected → skipping validation."
           fi
-
 
   #############################################
   # ✅ DEPLOY TO QA (ON MERGE TO dev)
@@ -177,7 +172,6 @@ jobs:
             --test-level RunLocalTests \
             --wait 30 \
             -o QA
-
 
   #############################################
   # ✅ DEPLOY TO UAT (ON MERGE TO uat)
