@@ -12,6 +12,11 @@ on:
       - dev
       - uat
 
+# ✅ REQUIRED FOR SARIF UPLOAD
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
 
   validate:
@@ -25,7 +30,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ✅ Read Apex Tests from PR Description
       - name: Read Apex Tests From PR Description
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -42,13 +46,11 @@ jobs:
             echo "APEX_TEST_LEVEL=RunSpecifiedTests" >> $GITHUB_ENV
           fi
 
-      # Install Salesforce CLI (sf)
       - name: Install Salesforce CLI
         run: |
           npm install --global @salesforce/cli
           sf --version
 
-      # Install sfdx-git-delta
       - name: Install sfdx-git-delta Plugin
         run: |
           echo y | sf plugins install sfdx-git-delta
@@ -63,7 +65,6 @@ jobs:
             echo "ORG=UAT" >> $GITHUB_OUTPUT
           fi
 
-      # Authenticate
       - name: Authenticate to Target Org
         env:
           QA_URL: ${{ secrets.SFDX_AUTH_URL_QA }}
@@ -77,7 +78,6 @@ jobs:
             sf org login sfdx-url -f auth.txt -a UAT
           fi
 
-      # Create delta (base vs head)
       - name: Generate Delta (PR Validation)
         run: |
           mkdir changed-sources
@@ -85,15 +85,12 @@ jobs:
           HEAD="${{ github.event.pull_request.head.sha }}"
           sf sgd:source:delta --to "$HEAD" --from "$BASE" --output changed-sources/ --generate-delta --source force-app/
 
-      # ✅ Auto-detect Tests If Not Provided
       - name: Auto Detect Related Tests (If Not Provided)
         if: env.APEX_TESTS == 'auto'
         run: |
           echo "Auto-detecting test classes..."
-
           TEST_CLASSES=$(find changed-sources -name "*Test.cls" \
-            | sed 's#.*/##' \
-            | sed 's/\.cls//g' \
+            | sed 's#.*/##' | sed 's/\.cls//g' \
             | tr '\n' ',' | sed 's/,$//')
 
           if [ -z "$TEST_CLASSES" ]; then
@@ -105,7 +102,7 @@ jobs:
             echo "APEX_TESTS=$TEST_CLASSES" >> $GITHUB_ENV
           fi
 
-      # ✅ ✅ ✅ SCANNER JOB ADDED HERE
+      # ✅ ✅ SCANNER STEPS (FIXED)
       - name: Install Java (For Scanner)
         run: |
           sudo apt-get update
@@ -125,11 +122,10 @@ jobs:
           cd ..
 
       - name: Upload Scanner Results to GitHub
-        uses: github/codeql-action/upload-sarif@v1
+        uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: changed-sources/apexScanResults.sarif
 
-      # ✅ Validate with Dynamic Test Selection
       - name: Validate Delta Deployment (Check-only)
         run: |
           if [ -d "changed-sources/force-app" ]; then
