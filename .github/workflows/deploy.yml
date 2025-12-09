@@ -25,7 +25,7 @@ jobs:
     if: github.event_name == 'pull_request'
 
     steps:
-      - name: Checkout Repo
+      - name: Checkout Repo (Full History)
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
@@ -61,26 +61,21 @@ jobs:
         run: echo y | sf plugins install sfdx-git-delta
 
       #####################################
-      # ✅ TARGET SELECTION (SAFE)
+      # ✅ TARGET SELECTION
       #####################################
       - name: Select Validation Target
         id: target
         run: |
           if [[ "${{ github.base_ref }}" == "dev" ]]; then
             echo "ORG=QA" >> $GITHUB_OUTPUT
-
           elif [[ "${{ github.base_ref }}" == "uat" ]]; then
             echo "ORG=UAT" >> $GITHUB_OUTPUT
-
-          elif [[ "${{ github.base_ref }}" == "master" ]]; then
-            echo "ORG=BLOCKED_PROD" >> $GITHUB_OUTPUT
-
           else
             echo "ORG=QA" >> $GITHUB_OUTPUT
           fi
 
       #####################################
-      # ✅ AUTHENTICATE (PROD BLOCKED HARD)
+      # ✅ AUTHENTICATION
       #####################################
       - name: Authenticate to Target Org
         env:
@@ -90,31 +85,27 @@ jobs:
           if [[ "${{ steps.target.outputs.ORG }}" == "QA" ]]; then
             echo "$QA_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a QA
-
-          elif [[ "${{ steps.target.outputs.ORG }}" == "UAT" ]]; then
+          else
             echo "$UAT_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a UAT
-
-          else
-            echo "🚫 PROD AUTH BLOCKED BY POLICY"
-            exit 0
           fi
 
       #####################################
-      # ✅ GENERATE DELTA (PR)
+      # ✅ SAFE DELTA GENERATION
       #####################################
       - name: Generate Delta (PR Validation)
         run: |
-          mkdir -p changed-sources
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+          mkdir changed-sources
+          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
 
-          sf sgd:source:delta \
-            --to "$HEAD" \
-            --from "$BASE" \
-            --output changed-sources/ \
-            --generate-delta \
-            --source force-app/
+          if [ -z "$PREV_COMMIT" ]; then
+            echo "⚠ No previous commit → FULL delta"
+            sf sgd:source:delta --to "HEAD" --from "HEAD" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          else
+            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          fi
 
       #####################################
       # ✅ VALIDATE DEPLOYMENT
@@ -122,9 +113,7 @@ jobs:
       - name: Validate Delta Deployment (Check-only)
         run: |
           if [ -d "changed-sources/force-app" ]; then
-
             if [ "${{ env.APEX_TEST_LEVEL }}" == "RunSpecifiedTests" ]; then
-              echo "✅ Running ONLY specified tests"
               sf project deploy start \
                 --source-dir changed-sources/force-app \
                 --dry-run \
@@ -133,9 +122,7 @@ jobs:
                 --tests "${{ env.APEX_TESTS }}" \
                 --wait 30 \
                 -o ${{ steps.target.outputs.ORG }}
-
             else
-              echo "✅ Running ALL local tests"
               sf project deploy start \
                 --source-dir changed-sources/force-app \
                 --dry-run \
@@ -164,7 +151,14 @@ jobs:
           sf org login sfdx-url -f auth.txt -a QA
       - run: |
           mkdir changed-sources
-          sf sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
+          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_COMMIT" ]; then
+            sf sgd:source:delta --to "HEAD" --from "HEAD" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          else
+            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          fi
       - run: |
           sf project deploy start \
             --source-dir changed-sources/force-app \
@@ -189,7 +183,14 @@ jobs:
           sf org login sfdx-url -f auth.txt -a UAT
       - run: |
           mkdir changed-sources
-          sf sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
+          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_COMMIT" ]; then
+            sf sgd:source:delta --to "HEAD" --from "HEAD" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          else
+            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
+              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+          fi
       - run: |
           sf project deploy start \
             --source-dir changed-sources/force-app \
@@ -197,36 +198,3 @@ jobs:
             --test-level RunLocalTests \
             --wait 30 \
             -o UAT
-
-
-####################################################
-# 🚨 PRODUCTION DEPLOYMENT (INTENTIONALLY DISABLED)
-####################################################
-# deploy_prod:
-#   runs-on: ubuntu-latest
-#   if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-#
-#   steps:
-#     - uses: actions/checkout@v3
-#     - name: Install Salesforce CLI
-#       run: npm install --global @salesforce/cli
-#     - name: Install sfdx-git-delta
-#       run: echo y | sf plugins install sfdx-git-delta
-#     - name: Authenticate to PROD
-#       env:
-#         SFDX_AUTH_URL_PROD: ${{ secrets.SFDX_AUTH_URL_PROD }}
-#       run: |
-#         echo "$SFDX_AUTH_URL_PROD" > auth.txt
-#         sf org login sfdx-url -f auth.txt -a PROD
-#     - name: Generate Delta for PROD
-#       run: |
-#         mkdir changed-sources
-#         sf sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
-#     - name: Deploy Delta to PROD
-#       run: |
-#         sf project deploy start \
-#           --source-dir changed-sources/force-app \
-#           --ignore-conflicts \
-#           --test-level RunLocalTests \
-#           --wait 60 \
-#           -o PROD
