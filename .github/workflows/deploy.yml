@@ -15,11 +15,11 @@ permissions:
   security-events: write
   actions: read
 
+jobs:
+
 #############################################
 # ✅ PR VALIDATION JOB
 #############################################
-jobs:
-
   validate:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
@@ -91,21 +91,20 @@ jobs:
           fi
 
       #####################################
-      # ✅ SAFE DELTA GENERATION
+      # ✅ SAFE PR DELTA (BASE vs HEAD)
       #####################################
       - name: Generate Delta (PR Validation)
         run: |
           mkdir changed-sources
-          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
 
-          if [ -z "$PREV_COMMIT" ]; then
-            echo "⚠ No previous commit → FULL delta"
-            sf sgd:source:delta --to "HEAD" --from "HEAD" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
-          else
-            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
-          fi
+          sf sgd:source:delta \
+            --to "$HEAD" \
+            --from "$BASE" \
+            --output-dir changed-sources \
+            --generate-delta \
+            --source-dir force-app
 
       #####################################
       # ✅ VALIDATE DEPLOYMENT
@@ -135,30 +134,37 @@ jobs:
             echo "No delta detected → skipping validation."
           fi
 
-  #############################################
-  # ✅ DEPLOY TO QA (ON MERGE TO dev)
-  #############################################
+#############################################
+# ✅ DEPLOY TO QA (ON MERGE TO dev)
+#############################################
   deploy_qa:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
       - run: npm install --global @salesforce/cli
       - run: echo y | sf plugins install sfdx-git-delta
+
       - run: |
           echo "${{ secrets.SFDX_AUTH_URL_QA }}" > auth.txt
           sf org login sfdx-url -f auth.txt -a QA
+
       - run: |
           mkdir changed-sources
-          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          PREV_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+
           if [ -z "$PREV_COMMIT" ]; then
-            sf sgd:source:delta --to "HEAD" --from "HEAD" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+            sf sgd:source:delta --to HEAD --from HEAD \
+              --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+            sf sgd:source:delta --to HEAD --from "$PREV_COMMIT" \
+              --output-dir changed-sources --generate-delta --source-dir force-app
           fi
+
       - run: |
           sf project deploy start \
             --source-dir changed-sources/force-app \
@@ -167,30 +173,37 @@ jobs:
             --wait 30 \
             -o QA
 
-  #############################################
-  # ✅ DEPLOY TO UAT (ON MERGE TO uat)
-  #############################################
+#############################################
+# ✅ DEPLOY TO UAT (ON MERGE TO uat)
+#############################################
   deploy_uat:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/uat'
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
       - run: npm install --global @salesforce/cli
       - run: echo y | sf plugins install sfdx-git-delta
+
       - run: |
           echo "${{ secrets.SFDX_AUTH_URL_UAT }}" > auth.txt
           sf org login sfdx-url -f auth.txt -a UAT
+
       - run: |
           mkdir changed-sources
-          PREV_COMMIT=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          PREV_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+
           if [ -z "$PREV_COMMIT" ]; then
-            sf sgd:source:delta --to "HEAD" --from "HEAD" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+            sf sgd:source:delta --to HEAD --from HEAD \
+              --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            sf sgd:source:delta --to "HEAD" --from "$PREV_COMMIT" \
-              --output-dir changed-sources/ --generate-delta --source-dir force-app/
+            sf sgd:source:delta --to HEAD --from "$PREV_COMMIT" \
+              --output-dir changed-sources --generate-delta --source-dir force-app
           fi
+
       - run: |
           sf project deploy start \
             --source-dir changed-sources/force-app \
