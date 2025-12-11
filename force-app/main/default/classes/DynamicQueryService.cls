@@ -13,12 +13,13 @@ public with sharing class DynamicQueryService {
             return new List<SObject>();
         }
 
-        // Build dynamic SOQL
+        
         String soql = 'SELECT ' + String.join(fieldNames, ',') +
                       ' FROM ' + objectName +
                       ' LIMIT :recordLimit';
 
         // Execute and return
         return Database.query(soql);
+        //Sjajscj
     }
 }
