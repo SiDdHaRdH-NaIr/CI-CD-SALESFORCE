@@ -31,6 +31,20 @@ jobs:
           fetch-depth: 0
 
       #####################################
+      # ✅ DETECT APEX CHANGES (NEW LOGIC)
+      #####################################
+      - name: Detect Apex Changes
+        id: detect_apex
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -E "\.cls$|\.trigger$" | wc -l)
+          
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "NO_APEX_CHANGES=true" >> $GITHUB_ENV
+          else
+            echo "NO_APEX_CHANGES=false" >> $GITHUB_ENV
+          fi
+
+      #####################################
       # ✅ TEST SELECTION FROM PR
       #####################################
       - name: Read Apex Tests From PR Description
@@ -40,16 +54,25 @@ jobs:
           echo "$PR_BODY" > pr_body.txt
           TESTS=$(sed -n 's/.*Apex::\[\(.*\)\]::Apex.*/\1/p' pr_body.txt)
 
-          if [ -z "$TESTS" ]; then
-            echo "✅ No tests mentioned → Running ALL local tests"
-            echo "APEX_TEST_LEVEL=RunLocalTests" >> $GITHUB_ENV
+          # Case 1: If no Apex changes → NoTestRun
+          if [[ "${NO_APEX_CHANGES}" == "true" ]]; then
+            echo "⚠️ No Apex changes → NoTestRun"
+            echo "APEX_TEST_LEVEL=NoTestRun" >> $GITHUB_ENV
             echo "APEX_TESTS=" >> $GITHUB_ENV
-          else
+            exit 0
+          fi
+
+          # Case 2: Developer specified tests
+          if [ -n "$TESTS" ]; then
             CLEAN_TESTS=$(echo "$TESTS" | tr ',' ' ')
-            echo "✅ Tests from PR: $CLEAN_TESTS"
             echo "APEX_TEST_LEVEL=RunSpecifiedTests" >> $GITHUB_ENV
             echo "APEX_TESTS=$CLEAN_TESTS" >> $GITHUB_ENV
+            exit 0
           fi
+
+          # Case 3: Apex changed but no tests mentioned
+          echo "APEX_TEST_LEVEL=RunLocalTests" >> $GITHUB_ENV
+          echo "APEX_TESTS=" >> $GITHUB_ENV
 
       #####################################
       # ✅ INSTALL CLI + DELTA
@@ -109,30 +132,44 @@ jobs:
       #####################################
       # ✅ VALIDATE DEPLOYMENT
       #####################################
-      - name: Validate Delta Deployment (Check-only)
+      - name: Validate Deployment
         run: |
-          if [ -d "changed-sources/force-app" ]; then
-            if [ "${{ env.APEX_TEST_LEVEL }}" == "RunSpecifiedTests" ]; then
-              sf project deploy start \
-                --source-dir changed-sources/force-app \
-                --dry-run \
-                --ignore-conflicts \
-                --test-level RunSpecifiedTests \
-                --tests "${{ env.APEX_TESTS }}" \
-                --wait 30 \
-                -o ${{ steps.target.outputs.ORG }}
-            else
-              sf project deploy start \
-                --source-dir changed-sources/force-app \
-                --dry-run \
-                --ignore-conflicts \
-                --test-level RunLocalTests \
-                --wait 30 \
-                -o ${{ steps.target.outputs.ORG }}
-            fi
-          else
+          if [ ! -d "changed-sources/force-app" ]; then
             echo "No delta detected → skipping validation."
+            exit 0
           fi
+
+          if [[ "${APEX_TEST_LEVEL}" == "NoTestRun" ]]; then
+            echo "⚠️ Deploy with NoTestRun"
+            sf project deploy start \
+              --source-dir changed-sources/force-app \
+              --dry-run \
+              --ignore-conflicts \
+              --test-level NoTestRun \
+              --wait 30 \
+              -o ${{ steps.target.outputs.ORG }}
+            exit 0
+          fi
+
+          if [[ "${APEX_TEST_LEVEL}" == "RunSpecifiedTests" ]]; then
+            sf project deploy start \
+              --source-dir changed-sources/force-app \
+              --dry-run \
+              --ignore-conflicts \
+              --test-level RunSpecifiedTests \
+              --tests "${APEX_TESTS}" \
+              --wait 30 \
+              -o ${{ steps.target.outputs.ORG }}
+            exit 0
+          fi
+
+          sf project deploy start \
+            --source-dir changed-sources/force-app \
+            --dry-run \
+            --ignore-conflicts \
+            --test-level RunLocalTests \
+            --wait 30 \
+            -o ${{ steps.target.outputs.ORG }}
 
 #############################################
 # ✅ DEPLOY TO QA (ON MERGE TO dev)
@@ -155,14 +192,11 @@ jobs:
 
       - run: |
           mkdir changed-sources
-          PREV_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
-
-          if [ -z "$PREV_COMMIT" ]; then
-            sf sgd:source:delta --to HEAD --from HEAD \
-              --output-dir changed-sources --generate-delta --source-dir force-app
+          PREV=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            sf sgd:source:delta --to HEAD --from HEAD --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            sf sgd:source:delta --to HEAD --from "$PREV_COMMIT" \
-              --output-dir changed-sources --generate-delta --source-dir force-app
+            sf sgd:source:delta --to HEAD --from "$PREV" --output-dir changed-sources --generate-delta --source-dir force-app
           fi
 
       - run: |
@@ -194,14 +228,11 @@ jobs:
 
       - run: |
           mkdir changed-sources
-          PREV_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
-
-          if [ -z "$PREV_COMMIT" ]; then
-            sf sgd:source:delta --to HEAD --from HEAD \
-              --output-dir changed-sources --generate-delta --source-dir force-app
+          PREV=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            sf sgd:source:delta --to HEAD --from HEAD --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            sf sgd:source:delta --to HEAD --from "$PREV_COMMIT" \
-              --output-dir changed-sources --generate-delta --source-dir force-app
+            sf sgd:source:delta --to HEAD --from "$PREV" --output-dir changed-sources --generate-delta --source-dir force-app
           fi
 
       - run: |
