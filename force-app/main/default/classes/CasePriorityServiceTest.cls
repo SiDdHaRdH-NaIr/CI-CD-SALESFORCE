@@ -1,6 +1,6 @@
 @IsTest
 public class CasePriorityServiceTest {
-    //cacsas
+
     @IsTest
     static void testUpdateCasePriority_allScenarios() {
 
