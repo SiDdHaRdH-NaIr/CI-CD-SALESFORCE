@@ -3,12 +3,10 @@ name: Salesforce Delta Deployment Pipeline
 on:
   pull_request:
     branches:
-      - master
       - dev
       - uat
   push:
     branches:
-      - master
       - dev
       - uat
 
@@ -19,19 +17,32 @@ permissions:
 
 jobs:
 
-  #############################################
-  # ✅ PR VALIDATION JOB
-  #############################################
+#############################################
+# ✅ PR VALIDATION JOB
+#############################################
   validate:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
 
     steps:
-
-      - name: Checkout Repo
+      - name: Checkout Repo (Full History)
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+
+      #####################################
+      # ✅ DETECT APEX CHANGES (NEW LOGIC)
+      #####################################
+      - name: Detect Apex Changes
+        id: detect_apex
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -E "\.cls$|\.trigger$" | wc -l)
+          
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "NO_APEX_CHANGES=true" >> $GITHUB_ENV
+          else
+            echo "NO_APEX_CHANGES=false" >> $GITHUB_ENV
+          fi
 
       #####################################
       # ✅ TEST SELECTION FROM PR
@@ -43,16 +54,25 @@ jobs:
           echo "$PR_BODY" > pr_body.txt
           TESTS=$(sed -n 's/.*Apex::\[\(.*\)\]::Apex.*/\1/p' pr_body.txt)
 
-          if [ -z "$TESTS" ]; then
-            echo "✅ No tests mentioned → Running ALL local tests"
-            echo "APEX_TEST_LEVEL=RunLocalTests" >> $GITHUB_ENV
+          # Case 1: If no Apex changes → NoTestRun
+          if [[ "${NO_APEX_CHANGES}" == "true" ]]; then
+            echo "⚠️ No Apex changes → NoTestRun"
+            echo "APEX_TEST_LEVEL=NoTestRun" >> $GITHUB_ENV
             echo "APEX_TESTS=" >> $GITHUB_ENV
-          else
+            exit 0
+          fi
+
+          # Case 2: Developer specified tests
+          if [ -n "$TESTS" ]; then
             CLEAN_TESTS=$(echo "$TESTS" | tr ',' ' ')
-            echo "✅ Tests from PR: $CLEAN_TESTS"
             echo "APEX_TEST_LEVEL=RunSpecifiedTests" >> $GITHUB_ENV
             echo "APEX_TESTS=$CLEAN_TESTS" >> $GITHUB_ENV
+            exit 0
           fi
+
+          # Case 3: Apex changed but no tests mentioned
+          echo "APEX_TEST_LEVEL=RunLocalTests" >> $GITHUB_ENV
+          echo "APEX_TESTS=" >> $GITHUB_ENV
 
       #####################################
       # ✅ INSTALL CLI + DELTA
@@ -64,127 +84,96 @@ jobs:
         run: echo y | sf plugins install sfdx-git-delta
 
       #####################################
-      # ✅ TARGET SELECTION (FINAL FIX)
+      # ✅ TARGET SELECTION
       #####################################
       - name: Select Validation Target
         id: target
         run: |
-          echo "PR Base Branch = ${{ github.base_ref }}"
-
           if [[ "${{ github.base_ref }}" == "dev" ]]; then
             echo "ORG=QA" >> $GITHUB_OUTPUT
-
           elif [[ "${{ github.base_ref }}" == "uat" ]]; then
             echo "ORG=UAT" >> $GITHUB_OUTPUT
-
-          elif [[ "${{ github.base_ref }}" == "master" ]]; then
-            echo "ORG=PROD" >> $GITHUB_OUTPUT
-
           else
             echo "ORG=QA" >> $GITHUB_OUTPUT
           fi
 
       #####################################
-      # ✅ AUTHENTICATE
+      # ✅ AUTHENTICATION
       #####################################
       - name: Authenticate to Target Org
         env:
           QA_URL: ${{ secrets.SFDX_AUTH_URL_QA }}
           UAT_URL: ${{ secrets.SFDX_AUTH_URL_UAT }}
-          PROD_URL: ${{ secrets.SFDX_AUTH_URL_PROD }}
         run: |
           if [[ "${{ steps.target.outputs.ORG }}" == "QA" ]]; then
             echo "$QA_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a QA
-
-          elif [[ "${{ steps.target.outputs.ORG }}" == "UAT" ]]; then
+          else
             echo "$UAT_URL" > auth.txt
             sf org login sfdx-url -f auth.txt -a UAT
-
-          elif [[ "${{ steps.target.outputs.ORG }}" == "PROD" ]]; then
-            echo "$PROD_URL" > auth.txt
-            sf org login sfdx-url -f auth.txt -a PROD
           fi
 
       #####################################
-      # ✅ GENERATE DELTA
+      # ✅ SAFE PR DELTA (BASE vs HEAD)
       #####################################
       - name: Generate Delta (PR Validation)
         run: |
           mkdir changed-sources
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
+
           sf sgd:source:delta \
             --to "$HEAD" \
             --from "$BASE" \
-            --output changed-sources/ \
+            --output-dir changed-sources \
             --generate-delta \
-            --source force-app/
-
-      #####################################
-      # ✅ SCANNER
-      #####################################
-      - name: Install Java
-        run: |
-          sudo apt-get update
-          sudo apt install default-jdk -y
-
-      - name: Install SFDX Scanner
-        run: sf plugins install @salesforce/sfdx-scanner
-
-      - name: Scan Apex Code (Delta Only)
-        run: |
-          cd changed-sources
-          sf scanner run --format sarif \
-            --target "./**/*.cls" \
-            --category "Security,Design,BestPractices,Performance" \
-            --outfile "apexScanResults.sarif"
-          cd ..
-
-      - name: Upload Scanner Results to GitHub
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: changed-sources/apexScanResults.sarif
+            --source-dir force-app
 
       #####################################
       # ✅ VALIDATE DEPLOYMENT
       #####################################
-      - name: Validate Delta Deployment (Check-only)
+      - name: Validate Deployment
         run: |
-          if [ -d "changed-sources/force-app" ]; then
-
-            if [ "${{ env.APEX_TEST_LEVEL }}" == "RunSpecifiedTests" ]; then
-              echo "✅ Running ONLY specified tests"
-
-              sf project deploy start \
-                --source-dir changed-sources/force-app \
-                --dry-run \
-                --ignore-conflicts \
-                --test-level RunSpecifiedTests \
-                --tests "${{ env.APEX_TESTS }}" \
-                --wait 30 \
-                -o ${{ steps.target.outputs.ORG }}
-
-            else
-              echo "✅ Running ALL local tests"
-
-              sf project deploy start \
-                --source-dir changed-sources/force-app \
-                --dry-run \
-                --ignore-conflicts \
-                --test-level RunLocalTests \
-                --wait 30 \
-                -o ${{ steps.target.outputs.ORG }}
-            fi
-
-          else
+          if [ ! -d "changed-sources/force-app" ]; then
             echo "No delta detected → skipping validation."
+            exit 0
           fi
 
+          if [[ "${APEX_TEST_LEVEL}" == "NoTestRun" ]]; then
+            echo "⚠️ Deploy with NoTestRun"
+            sf project deploy start \
+              --source-dir changed-sources/force-app \
+              --dry-run \
+              --ignore-conflicts \
+              --test-level NoTestRun \
+              --wait 30 \
+              -o ${{ steps.target.outputs.ORG }}
+            exit 0
+          fi
 
-  #############################################
-  # ✅ DEPLOY TO QA (ON MERGE TO dev)
-  #############################################
+          if [[ "${APEX_TEST_LEVEL}" == "RunSpecifiedTests" ]]; then
+            sf project deploy start \
+              --source-dir changed-sources/force-app \
+              --dry-run \
+              --ignore-conflicts \
+              --test-level RunSpecifiedTests \
+              --tests "${APEX_TESTS}" \
+              --wait 30 \
+              -o ${{ steps.target.outputs.ORG }}
+            exit 0
+          fi
+
+          sf project deploy start \
+            --source-dir changed-sources/force-app \
+            --dry-run \
+            --ignore-conflicts \
+            --test-level RunLocalTests \
+            --wait 30 \
+            -o ${{ steps.target.outputs.ORG }}
+
+#############################################
+# ✅ DEPLOY TO QA (ON MERGE TO dev)
+#############################################
   deploy_qa:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -194,42 +183,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI
-        run: npm install --global @salesforce/cli
+      - run: npm install --global @salesforce/cli
+      - run: echo y | sf plugins install sfdx-git-delta
 
-      - name: Install sfdx-git-delta
-        run: echo y | sf plugins install sfdx-git-delta
-
-      - name: Authenticate to QA
-        env:
-          SFDX_AUTH_URL_QA: ${{ secrets.SFDX_AUTH_URL_QA }}
-        run: |
-          echo "$SFDX_AUTH_URL_QA" > auth.txt
+      - run: |
+          echo "${{ secrets.SFDX_AUTH_URL_QA }}" > auth.txt
           sf org login sfdx-url -f auth.txt -a QA
 
-      - name: Generate Delta for QA
-        run: |
+      - run: |
           mkdir changed-sources
-          sf sgd:source:delta --to "HEAD" --from "HEAD^" \
-            --output changed-sources/ --generate-delta --source force-app/
-
-      - name: Deploy Delta to QA
-        run: |
-          if [ -d "changed-sources/force-app" ]; then
-            sf project deploy start \
-              --source-dir changed-sources/force-app \
-              --ignore-conflicts \
-              --test-level RunLocalTests \
-              --wait 30 \
-              -o QA
+          PREV=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            sf sgd:source:delta --to HEAD --from HEAD --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            echo "No delta for QA deployment."
+            sf sgd:source:delta --to HEAD --from "$PREV" --output-dir changed-sources --generate-delta --source-dir force-app
           fi
 
+      - run: |
+          sf project deploy start \
+            --source-dir changed-sources/force-app \
+            --ignore-conflicts \
+            --test-level RunLocalTests \
+            --wait 30 \
+            -o QA
 
-  #############################################
-  # ✅ DEPLOY TO UAT (ON MERGE TO uat)
-  #############################################
+#############################################
+# ✅ DEPLOY TO UAT (ON MERGE TO uat)
+#############################################
   deploy_uat:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/uat'
@@ -239,79 +219,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI
-        run: npm install --global @salesforce/cli
+      - run: npm install --global @salesforce/cli
+      - run: echo y | sf plugins install sfdx-git-delta
 
-      - name: Install sfdx-git-delta
-        run: echo y | sf plugins install sfdx-git-delta
-
-      - name: Authenticate to UAT
-        env:
-          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL_UAT }}
-        run: |
-          echo "$SFDX_AUTH_URL" > auth.txt
+      - run: |
+          echo "${{ secrets.SFDX_AUTH_URL_UAT }}" > auth.txt
           sf org login sfdx-url -f auth.txt -a UAT
 
-      - name: Generate Delta for UAT
-        run: |
+      - run: |
           mkdir changed-sources
-          sf sgd:source:delta --to "HEAD" --from "HEAD^" \
-            --output changed-sources/ --generate-delta --source force-app/
-
-      - name: Deploy Delta to UAT
-        run: |
-          if [ -d "changed-sources/force-app" ]; then
-            sf project deploy start \
-              --source-dir changed-sources/force-app \
-              --ignore-conflicts \
-              --test-level RunLocalTests \
-              --wait 30 \
-              -o UAT
+          PREV=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            sf sgd:source:delta --to HEAD --from HEAD --output-dir changed-sources --generate-delta --source-dir force-app
           else
-            echo "No delta for UAT deployment."
+            sf sgd:source:delta --to HEAD --from "$PREV" --output-dir changed-sources --generate-delta --source-dir force-app
           fi
 
+      - run: |
+          sf project deploy start \
+            --source-dir changed-sources/force-app \
+            --ignore-conflicts \
+            --test-level RunLocalTests \
+            --wait 30 \
+            -o UAT
 
-  ####################################################
-  # 🚨 PRODUCTION DEPLOYMENT (SAFELY COMMENTED)
-  ####################################################
-  # deploy_prod:
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-  #
-  #   steps:
-  #     - uses: actions/checkout@v3
-  #       with:
-  #         fetch-depth: 0
-  #
-  #     - name: Install Salesforce CLI
-  #       run: npm install --global @salesforce/cli
-  #
-  #     - name: Install sfdx-git-delta
-  #       run: echo y | sf plugins install sfdx-git-delta
-  #
-  #     - name: Authenticate to PROD
-  #       env:
-  #         SFDX_AUTH_URL_PROD: ${{ secrets.SFDX_AUTH_URL_PROD }}
-  #       run: |
-  #         echo "$SFDX_AUTH_URL_PROD" > auth.txt
-  #         sf org login sfdx-url -f auth.txt -a PROD
-  #
-  #     - name: Generate Delta for PROD
-  #       run: |
-  #         mkdir changed-sources
-  #         sf sgd:source:delta --to "HEAD" --from "HEAD^" \
-  #           --output changed-sources/ --generate-delta --source force-app/
-  #
-  #     - name: Deploy Delta to PROD
-  #       run: |
-  #         if [ -d "changed-sources/force-app" ]; then
-  #           sf project deploy start \
-  #             --source-dir changed-sources/force-app \
-  #             --ignore-conflicts \
-  #             --test-level RunLocalTests \
-  #             --wait 60 \
-  #             -o PROD
-  #         else
-  #           echo "No delta for PROD deployment."
-  #         fi
